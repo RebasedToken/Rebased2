@@ -4,7 +4,7 @@ Rebased is a trustless elastic supply currency that adjusts its supply without d
 
 ## Smart contracts
 
-The smart contracts in this repository are already flattened and deplouyment-ready.
+The smart contracts in this repository are already flattened and deployment-ready.
 
 - [Rebased ERC20 token](contracts/Rebased.sol)
 - [Rebased Controller](contracts/RebasedController.sol)
