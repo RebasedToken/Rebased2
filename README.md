@@ -4,6 +4,9 @@ Rebased is a trustless elastic supply currency that adjusts its supply without d
 
 ## Smart contracts
 
-- [Rebased ERC20 token]
-- [Rebased Controller]
-- [Rebased Oracle]
+The smart contracts in this repository are already flattened and deplouyment-ready.
+
+- [Rebased ERC20 token](contracts/Rebased.sol)
+- [Rebased Controller](contracts/RebasedController.sol)
+- [Simple Oracle](contracts/oracle/SimpleOracle.sol)
+- [Rebased Oracle](contracts/oracle/RebasedOracle.sol)
