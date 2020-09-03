@@ -228,7 +228,9 @@ interface IRebased {
 
 interface IOracle {
     function getData() external view returns (uint256);
+    function update() external;
 }
+
 
 /**
  * @title Ownable
@@ -331,7 +333,6 @@ contract RebasedController is Ownable {
     // Stable ordering is not guaranteed.
     Transaction[] public transactions;
 
-
     event LogRebase(
         uint256 indexed epoch,
         uint256 exchangeRate,
@@ -372,15 +373,41 @@ contract RebasedController is Ownable {
     // MAX_SUPPLY = MAX_INT256 / MAX_RATE
     uint256 private constant MAX_SUPPLY = ~(uint256(1) << 255) / MAX_RATE;
 
+    // Rebase will remain restricted to the owner until the final Oracle is deployed and battle-tested.
+    // Ownership will be renounced after this inital period.
+    
+    bool public rebaseLocked; 
+
+    modifier unlockedOrOwner {
+        require(!rebaseLocked || isOwner());
+        _;
+    }
+
     constructor(address _rebased) public {
         deviationThreshold = 5 * 10 ** (DECIMALS-2);
 
         rebaseLag = 20;
-        minRebaseTimeIntervalSec = 12 hours;
+        // minRebaseTimeIntervalSec = 12 hours;
+        minRebaseTimeIntervalSec = 1 minutes;
         lastRebaseTimestampSec = 0;
         epoch = 0;
+        rebaseLocked = true;
         
         rebased = IRebased(_rebased);
+    }
+    
+    /**
+     * @dev Allows the current owner to relinquish control of the contract.
+     * @notice Override to ensure that rebases aren't locked when this happens.
+     */
+     
+    function renounceOwnership() public onlyOwner {
+        require(!rebaseLocked, "Cannot renounce ownership if rebase is locked");
+        super.renounceOwnership();
+    }
+        
+    function setRebaseLocked(bool _locked) external onlyOwner {
+        rebaseLocked = _locked;
     }
 
     /**
@@ -398,7 +425,7 @@ contract RebasedController is Ownable {
      *
      */
      
-    function rebase() external {
+    function rebase() external unlockedOrOwner {
 
         require(canRebase(), "Insufficient time has passed since last rebase");
 
@@ -425,6 +452,8 @@ contract RebasedController is Ownable {
                 }
             }
         }
+        
+        marketOracle.update();
         
         emit LogRebase(epoch, exchangeRate, supplyDelta, now);
     }
