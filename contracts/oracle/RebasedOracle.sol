@@ -3,6 +3,8 @@
 /*
 MIT License
 
+Copyright (c) 2020 Rebased
+
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
@@ -27,7 +29,9 @@ pragma solidity 0.5.17;
 
 interface IOracle {
     function getData() external view returns (uint256);
+    function update() external;
 }
+
 
 
 interface IUniswapV2Factory {
@@ -326,12 +330,6 @@ contract RebasedOracle is IOracle {
     uint private usdcEthPrice1CumulativeLast;
     uint32 private usdcEthBlockTimestampLast;
     
-    uint public lastUpdateTimestamp;
-    uint public lastAnswer;
-    
-    uint public constant MIN_PERIOD = 2 hours; // Minimum time that must pass between updates
-    uint public constant UPDATE_LAG = 10 minutes; // Time before an update of "last" values takes effect
-    
     address private constant _weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address private constant _usdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
 
@@ -395,29 +393,16 @@ contract RebasedOracle is IOracle {
     // Update "last" state variables to current values
     // This is *only* called by the controller during rebase which enforces a minimum interim period of 12h.
    function update() external onlyController {
-
-        uint timeStamp = block.timestamp;
-        uint timeElapsed = timeStamp - lastUpdateTimestamp;
         
-        require(timeElapsed > MIN_PERIOD,"Update frequency is too high");
-        
-        lastUpdateTimestamp = timeStamp;
-          
         uint rebEthAverage;
         uint usdcEthAverage;
         
         (ethRebPrice0CumulativeLast, ethRebPrice1CumulativeLast, ethRebBlockTimestampLast, rebEthAverage) = getRebEthRate();
         (usdcEthPrice0CumulativeLast, usdcEthPrice1CumulativeLast, usdcEthBlockTimestampLast, usdcEthAverage) = getUsdcEthRate();
-        
-        lastAnswer = (rebEthAverage * 1e18) / usdcEthAverage;
     }
 
     // Return the average price since last update
     function getData() external view returns (uint256) {
-        
-        if (block.timestamp < lastUpdateTimestamp + UPDATE_LAG) {
-            return (lastAnswer);
-        }
         
         uint _price0CumulativeLast;
         uint _price1CumulativeLast;
