@@ -251,6 +251,83 @@ library SafeMathInt {
     }
 }
 
+
+/**
+ * @title Ownable
+ * @dev The Ownable contract has an owner address, and provides basic authorization control
+ * functions, this simplifies the implementation of "user permissions".
+ */
+contract Ownable {
+  address private _owner;
+
+  event OwnershipRenounced(address indexed previousOwner);
+  
+  event OwnershipTransferred(
+    address indexed previousOwner,
+    address indexed newOwner
+  );
+
+
+  /**
+   * @dev The Ownable constructor sets the original `owner` of the contract to the sender
+   * account.
+   */
+  constructor() public {
+    _owner = msg.sender;
+  }
+
+  /**
+   * @return the address of the owner.
+   */
+  function owner() public view returns(address) {
+    return _owner;
+  }
+
+  /**
+   * @dev Throws if called by any account other than the owner.
+   */
+  modifier onlyOwner() {
+    require(isOwner());
+    _;
+  }
+
+  /**
+   * @return true if `msg.sender` is the owner of the contract.
+   */
+  function isOwner() public view returns(bool) {
+    return msg.sender == _owner;
+  }
+
+  /**
+   * @dev Allows the current owner to relinquish control of the contract.
+   * @notice Renouncing to ownership will leave the contract without an owner.
+   * It will not be possible to call the functions with the `onlyOwner`
+   * modifier anymore.
+   */
+  function renounceOwnership() public onlyOwner {
+    emit OwnershipRenounced(_owner);
+    _owner = address(0);
+  }
+
+  /**
+   * @dev Allows the current owner to transfer control of the contract to a newOwner.
+   * @param newOwner The address to transfer ownership to.
+   */
+  function transferOwnership(address newOwner) public onlyOwner {
+    _transferOwnership(newOwner);
+  }
+
+  /**
+   * @dev Transfers control of the contract to a newOwner.
+   * @param newOwner The address to transfer ownership to.
+   */
+  function _transferOwnership(address newOwner) internal {
+    require(newOwner != address(0));
+    emit OwnershipTransferred(_owner, newOwner);
+    _owner = newOwner;
+  }
+}
+
 /**
  * @title Rebased V2 ERC20 token
  * @dev Rebased is based on the uFragments protocol first debuted by Ampleforth.
@@ -261,7 +338,7 @@ library SafeMathInt {
  *      We support splitting the currency in expansion and combining the currency on contraction by
  *      changing the exchange rate between the hidden 'gons' and the public 'fragments'.
  */
-contract Rebased is ERC20Detailed {
+contract RebasedV2 is ERC20Detailed, Ownable {
     using SafeMath for uint256;
     using SafeMathInt for int256;
 
@@ -283,7 +360,7 @@ contract Rebased is ERC20Detailed {
 
     uint256 private constant DECIMALS = 9;
     uint256 private constant MAX_UINT256 = ~uint256(0);
-    uint256 private constant INITIAL_FRAGMENTS_SUPPLY =  25 * 10**5 * 10**DECIMALS;
+    uint256 private constant INITIAL_FRAGMENTS_SUPPLY =  2082412747493439;
 
     // TOTAL_GONS is a multiple of INITIAL_FRAGMENTS_SUPPLY so that _gonsPerFragment is an integer.
     // Use the highest value that fits in a uint256 for max granularity.
@@ -327,23 +404,12 @@ contract Rebased is ERC20Detailed {
 
         _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
 
-        // From this point forward, _gonsPerFragment is taken as the source of truth.
-        // We recalculate a new _totalSupply to be in agreement with the _gonsPerFragment
-        // conversion rate.
-        // This means our applied supplyDelta can deviate from the requested supplyDelta,
-        // but this deviation is guaranteed to be < (_totalSupply^2)/(TOTAL_GONS - _totalSupply).
-        //
-        // In the case of _totalSupply <= MAX_UINT128 (our current supply cap), this
-        // deviation is guaranteed to be < 1, so we can omit this step. If the supply cap is
-        // ever increased, it must be re-included.
-        // _totalSupply = TOTAL_GONS.div(_gonsPerFragment)
-
         emit LogRebase(epoch, _totalSupply);
         return _totalSupply;
     }
 
     constructor()
-        ERC20Detailed("Rebased V2", "REB", uint8(DECIMALS))
+        ERC20Detailed("Rebased v2", "REB2", uint8(DECIMALS))
         public
     {
         _totalSupply = INITIAL_FRAGMENTS_SUPPLY;
@@ -358,10 +424,9 @@ contract Rebased is ERC20Detailed {
      */
     function setController(address _controller)
         external
-        onlyController
+        onlyOwner
         returns (uint256)
     {
-        require(controller != address(0));
         controller = _controller;
     }
 
