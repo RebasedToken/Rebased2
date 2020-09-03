@@ -12,4 +12,4 @@ The smart contracts in this repository are already flattened and deployment-read
 
 - [Mock Rebased V1 token](https://ropsten.etherscan.io/address/0xfF96067060626Ea33AF23Eb5b188aaA6763E88d6)
 
-Testnet REB (v1) can be requested from the [testnet faucet](https://ropsten.etherscan.io/address/0xC84F2c6a2d49951681236abd1A05886b8FB6380D).
+Testnet REB (v1) can be requested from the [testnet faucet](https://ropsten.etherscan.io/address/0xC84F2c6a2d49951681236abd1A05886b8FB6380D) ([ABI](abi/RebasedTestFaucet.abi)).
