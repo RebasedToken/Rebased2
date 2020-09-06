@@ -24,6 +24,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
 */
 
 pragma solidity 0.5.17;
@@ -92,91 +93,6 @@ library SafeMath {
   }
 }
 
-/**
- * @title ERC20 interface
- * @dev see https://github.com/ethereum/EIPs/issues/20
- */
-interface IERC20 {
-  function totalSupply() external view returns (uint256);
-
-  function balanceOf(address who) external view returns (uint256);
-
-  function allowance(address owner, address spender)
-    external view returns (uint256);
-
-  function transfer(address to, uint256 value) external returns (bool);
-
-  function approve(address spender, uint256 value)
-    external returns (bool);
-
-  function transferFrom(address from, address to, uint256 value)
-    external returns (bool);
-
-  event Transfer(
-    address indexed from,
-    address indexed to,
-    uint256 value
-  );
-
-  event Approval(
-    address indexed owner,
-    address indexed spender,
-    uint256 value
-  );
-}
-
-contract ERC20Detailed is IERC20 {
-    string private _name;
-    string private _symbol;
-    uint8 private _decimals;
-
-    /**
-     * @dev Sets the values for `name`, `symbol`, and `decimals`. All three of
-     * these values are immutable: they can only be set once during
-     * construction.
-     */
-    constructor (string memory name, string memory symbol, uint8 decimals) public {
-        _name = name;
-        _symbol = symbol;
-        _decimals = decimals;
-    }
-
-    /**
-     * @dev Returns the name of the token.
-     */
-    function name() public view returns (string memory) {
-        return _name;
-    }
-
-    /**
-     * @dev Returns the symbol of the token, usually a shorter version of the
-     * name.
-     */
-    function symbol() public view returns (string memory) {
-        return _symbol;
-    }
-
-    /**
-     * @dev Returns the number of decimals used to get its user representation.
-     * For example, if `decimals` equals `2`, a balance of `505` tokens should
-     * be displayed to a user as `5,05` (`505 / 10 ** 2`).
-     *
-     * Tokens usually opt for a value of 18, imitating the relationship between
-     * Ether and Wei.
-     *
-     * NOTE: This information is only used for _display_ purposes: it in
-     * no way affects any of the arithmetic of the contract, including
-     * {IERC20-balanceOf} and {IERC20-transfer}.
-     */
-    function decimals() public view returns (uint8) {
-        return _decimals;
-    }
-}
-
-/**
- * @title SafeMathInt
- * @dev Math operations for int256 with overflow safety checks.
- */
 library SafeMathInt {
     int256 private constant MIN_INT256 = int256(1) << 255;
     int256 private constant MAX_INT256 = ~(int256(1) << 255);
@@ -249,6 +165,70 @@ library SafeMathInt {
         require(a != MIN_INT256);
         return a < 0 ? -a : a;
     }
+}
+
+/**
+ * @title Various utilities useful for uint256.
+ */
+library UInt256Lib {
+
+    uint256 private constant MAX_INT256 = ~(uint256(1) << 255);
+
+    /**
+     * @dev Safely converts a uint256 to an int256.
+     */
+    function toInt256Safe(uint256 a)
+        internal
+        pure
+        returns (int256)
+    {
+        require(a <= MAX_INT256);
+        return int256(a);
+    }
+}
+
+/**
+ * @title ERC20 interface
+ * @dev see https://github.com/ethereum/EIPs/issues/20
+ */
+interface IERC20 {
+
+  function totalSupply() external view returns (uint256);
+
+  function balanceOf(address who) external view returns (uint256);
+
+  function allowance(address owner, address spender)
+    external view returns (uint256);
+
+  function transfer(address to, uint256 value) external returns (bool);
+
+  function approve(address spender, uint256 value)
+    external returns (bool);
+
+  function transferFrom(address from, address to, uint256 value)
+    external returns (bool);
+
+  event Transfer(
+    address indexed from,
+    address indexed to,
+    uint256 value
+  );
+
+  event Approval(
+    address indexed owner,
+    address indexed spender,
+    uint256 value
+  );
+}
+
+interface IRebased {
+    function totalSupply() external view returns (uint256);
+    function rebase(uint256 epoch, int256 supplyDelta) external returns (uint256);
+}
+
+interface IOracle {
+    function getData() external view returns (uint256);
+    function update() external;
 }
 
 
@@ -329,238 +309,312 @@ contract Ownable {
 }
 
 /**
- * @title Rebased V2 ERC20 token
- * @dev Rebased is based on the uFragments protocol first debuted by Ampleforth.
- *      uFragments is a normal ERC20 token, but its supply can be adjusted by splitting and
- *      combining tokens proportionally across all wallets.
+ * @title Rebased Controller
+ * @dev Controller for an elastic supply currency based on the uFragments Ideal Money protocol a.k.a. Ampleforth.
+ *      uFragments operates symmetrically on expansion and contraction. It will both split and
+ *      combine coins to maintain a stable unit price.
  *
- *      uFragment balances are internally represented with a hidden denomination, 'gons'.
- *      We support splitting the currency in expansion and combining the currency on contraction by
- *      changing the exchange rate between the hidden 'gons' and the public 'fragments'.
+ *      This component regulates the token supply of the uFragments ERC20 token in response to
+ *      market oracles.
  */
-contract RebasedV2 is ERC20Detailed, Ownable {
+contract RebasedController is Ownable {
     using SafeMath for uint256;
     using SafeMathInt for int256;
+    using UInt256Lib for uint256;
 
-    event LogRebase(uint256 indexed epoch, uint256 totalSupply);
-
-    // Used for authentication
-    address public controller;
-
-    modifier onlyController() {
-        require(msg.sender == controller);
-        _;
+    struct Transaction {
+        bool enabled;
+        address destination;
+        bytes data;
     }
 
-    modifier validRecipient(address to) {
-        require(to != address(0x0));
-        require(to != address(this));
-        _;
-    }
+    event TransactionFailed(address indexed destination, uint index, bytes data);
 
-    uint256 private constant DECIMALS = 9;
-    uint256 private constant MAX_UINT256 = ~uint256(0);
-    uint256 private constant INITIAL_FRAGMENTS_SUPPLY =  2082412747493439;
+    // Stable ordering is not guaranteed.
+    Transaction[] public transactions;
 
-    // TOTAL_GONS is a multiple of INITIAL_FRAGMENTS_SUPPLY so that _gonsPerFragment is an integer.
-    // Use the highest value that fits in a uint256 for max granularity.
-    uint256 private constant TOTAL_GONS = MAX_UINT256 - (MAX_UINT256 % INITIAL_FRAGMENTS_SUPPLY);
+    event LogRebase(
+        uint256 indexed epoch,
+        uint256 exchangeRate,
+        int256 requestedSupplyAdjustment,
+        uint256 timestampSec
+    );
 
-    // MAX_SUPPLY = maximum integer < (sqrt(4*TOTAL_GONS + 1) - 1) / 2
-    uint256 private constant MAX_SUPPLY = ~uint128(0);  // (2^128) - 1
+    IRebased public rebased;
 
-    uint256 private _totalSupply;
-    uint256 private _gonsPerFragment;
-    mapping(address => uint256) private _gonBalances;
+    // Market oracle provides the token/USD exchange rate as an 18 decimal fixed point number.
+    IOracle public marketOracle;
 
-    // This is denominated in Fragments, because the gons-fragments conversion might change before
-    // it's fully paid.
-    mapping (address => mapping (address => uint256)) private _allowedFragments;
+    // If the current exchange rate is within this fractional distance from the target, no supply
+    // update is performed. Fixed point number--same format as the rate.
+    // (ie) abs(rate - targetRate) / targetRate < deviationThreshold, then no supply change.
+    // DECIMALS Fixed point number.
+    uint256 public deviationThreshold;
 
-    /**
-     * @dev Notifies Fragments contract about a new rebase cycle.
-     * @param supplyDelta The number of new fragment tokens to add into circulation via expansion.
-     * @return The total number of fragments after the supply adjustment.
-     */
-    function rebase(uint256 epoch, int256 supplyDelta)
-        external
-        onlyController
-        returns (uint256)
-    {
-        if (supplyDelta == 0) {
-            emit LogRebase(epoch, _totalSupply);
-            return _totalSupply;
-        }
+    // The rebase lag parameter, used to dampen the applied supply adjustment by 1 / rebaseLag
+    // Check setRebaseLag comments for more details.
+    // Natural number, no decimal places.
+    uint256 public rebaseLag;
 
-        if (supplyDelta < 0) {
-            _totalSupply = _totalSupply.sub(uint256(supplyDelta.abs()));
-        } else {
-            _totalSupply = _totalSupply.add(uint256(supplyDelta));
-        }
+    // More than this much time must pass between rebase operations.
+    uint256 public minRebaseTimeIntervalSec;
 
-        if (_totalSupply > MAX_SUPPLY) {
-            _totalSupply = MAX_SUPPLY;
-        }
+    // Block timestamp of last rebase operation
+    uint256 public lastRebaseTimestampSec;
 
-        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+    // The number of rebase cycles since inception
+    uint256 public epoch;
 
-        emit LogRebase(epoch, _totalSupply);
-        return _totalSupply;
-    }
+    uint256 private constant DECIMALS = 18;
 
-    constructor()
-        ERC20Detailed("Rebased v2", "REB2", uint8(DECIMALS))
-        public
-    {
-        _totalSupply = INITIAL_FRAGMENTS_SUPPLY;
-        _gonBalances[msg.sender] = TOTAL_GONS;
-        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+    // Due to the expression in computeSupplyDelta(), MAX_RATE * MAX_SUPPLY must fit into an int256.
+    // Both are 18 decimals fixed point numbers.
+    uint256 private constant MAX_RATE = 10**6 * 10**DECIMALS;
+    // MAX_SUPPLY = MAX_INT256 / MAX_RATE
+    uint256 private constant MAX_SUPPLY = ~(uint256(1) << 255) / MAX_RATE;
+
+    // Rebase will remain restricted to the owner until the final Oracle is deployed and battle-tested.
+    // Ownership will be renounced after this inital period.
+    
+    bool public rebaseLocked; 
+
+    constructor(address _rebased) public {
+        deviationThreshold = 5 * 10 ** (DECIMALS-2);
+
+        rebaseLag = 10;
+        minRebaseTimeIntervalSec = 12 hours;
+        lastRebaseTimestampSec = 0;
+        epoch = 0;
+        rebaseLocked = true;
         
-        emit Transfer(address(0x0), msg.sender, _totalSupply);
+        rebased = IRebased(_rebased);
+    }
+    
+    /**
+     * @dev Allows the current owner to relinquish control of the contract.
+     * @notice Override to ensure that rebases aren't locked when this happens.
+     */
+     
+    function renounceOwnership() public onlyOwner {
+        require(!rebaseLocked, "Cannot renounce ownership if rebase is locked");
+        super.renounceOwnership();
+    }
+        
+    function setRebaseLocked(bool _locked) external onlyOwner {
+        rebaseLocked = _locked;
     }
 
     /**
-     * @notice Sets a new controller
+     * @notice Returns true if at least minRebaseTimeIntervalSec seconds have passed since last rebase.
+     *
      */
-    function setController(address _controller)
+     
+    function canRebase() public view returns (bool) {
+        return ((!rebaseLocked || isOwner()) && lastRebaseTimestampSec.add(minRebaseTimeIntervalSec) < now);
+    }
+
+    /**
+     * @notice Initiates a new rebase operation, provided the minimum time period has elapsed.
+     *
+     */
+     
+    function rebase() external {
+
+        require(tx.origin == msg.sender);
+        require(canRebase(), "Rebase not allowed");
+
+        lastRebaseTimestampSec = now;
+
+        epoch = epoch.add(1);
+        
+        (uint256 exchangeRate, uint256 targetRate, int256 supplyDelta) = getRebaseValues();
+        
+        uint256 supplyAfterRebase = rebased.rebase(epoch, supplyDelta);
+        
+        assert(supplyAfterRebase <= MAX_SUPPLY);
+        
+        for (uint i = 0; i < transactions.length; i++) {
+            Transaction storage t = transactions[i];
+            if (t.enabled) {
+                bool result =
+                    externalCall(t.destination, t.data);
+                if (!result) {
+                    emit TransactionFailed(t.destination, i, t.data);
+                    revert("Transaction Failed");
+                }
+            }
+        }
+        
+        marketOracle.update();
+        
+        emit LogRebase(epoch, exchangeRate, supplyDelta, now);
+    }
+    
+    /**
+     * @notice Calculates the supplyDelta and returns the current set of values for the rebase
+     *
+     * @dev The supply adjustment equals (_totalSupply * DeviationFromTargetRate) / rebaseLag
+     *      Where DeviationFromTargetRate is (MarketOracleRate - targetRate) / targetRate
+     * 
+     */    
+    
+    function getRebaseValues() public view returns (uint256, uint256, int256) {
+
+        uint256 targetRate = 10 ** DECIMALS;
+        uint256 exchangeRate = marketOracle.getData();
+
+        if (exchangeRate > MAX_RATE) {
+            exchangeRate = MAX_RATE;
+        }
+
+        int256 supplyDelta = computeSupplyDelta(exchangeRate, targetRate);
+
+        // Apply the dampening factor.
+        supplyDelta = supplyDelta.div(rebaseLag.toInt256Safe());
+
+        if (supplyDelta > 0 && rebased.totalSupply().add(uint256(supplyDelta)) > MAX_SUPPLY) {
+            supplyDelta = (MAX_SUPPLY.sub(rebased.totalSupply())).toInt256Safe();
+        }
+
+        return (exchangeRate, targetRate, supplyDelta);
+    }
+
+
+    /**
+     * @return Computes the total supply adjustment in response to the exchange rate
+     *         and the targetRate.
+     */
+    function computeSupplyDelta(uint256 rate, uint256 targetRate)
+        internal
+        view
+        returns (int256)
+    {
+        if (withinDeviationThreshold(rate, targetRate)) {
+            return 0;
+        }
+
+        // supplyDelta = totalSupply * (rate - targetRate) / targetRate
+        int256 targetRateSigned = targetRate.toInt256Safe();
+        return rebased.totalSupply().toInt256Safe()
+            .mul(rate.toInt256Safe().sub(targetRateSigned))
+            .div(targetRateSigned);
+    }
+
+    /**
+     * @param rate The current exchange rate, an 18 decimal fixed point number.
+     * @param targetRate The target exchange rate, an 18 decimal fixed point number.
+     * @return If the rate is within the deviation threshold from the target rate, returns true.
+     *         Otherwise, returns false.
+     */
+    function withinDeviationThreshold(uint256 rate, uint256 targetRate)
+        internal
+        view
+        returns (bool)
+    {
+        uint256 absoluteDeviationThreshold = targetRate.mul(deviationThreshold)
+            .div(10 ** DECIMALS);
+
+        return (rate >= targetRate && rate.sub(targetRate) < absoluteDeviationThreshold)
+            || (rate < targetRate && targetRate.sub(rate) < absoluteDeviationThreshold);
+    }
+    
+    /**
+     * @notice Sets the reference to the market oracle.
+     * @param marketOracle_ The address of the market oracle contract.
+     */
+    function setMarketOracle(IOracle marketOracle_)
         external
         onlyOwner
-        returns (uint256)
     {
-        controller = _controller;
+        marketOracle = marketOracle_;
     }
-
-
+    
     /**
-     * @return The total number of fragments.
+     * @notice Adds a transaction that gets called for a downstream receiver of rebases
+     * @param destination Address of contract destination
+     * @param data Transaction data payload
      */
-    function totalSupply()
+    function addTransaction(address destination, bytes calldata data)
         external
-        view
-        returns (uint256)
+        onlyOwner
     {
-        return _totalSupply;
-    }
-
-    /**
-     * @param who The address to query.
-     * @return The balance of the specified address.
-     */
-    function balanceOf(address who)
-        external
-        view
-        returns (uint256)
-    {
-        return _gonBalances[who].div(_gonsPerFragment);
+        transactions.push(Transaction({
+            enabled: true,
+            destination: destination,
+            data: data
+        }));
     }
 
     /**
-     * @dev Transfer tokens to a specified address.
-     * @param to The address to transfer to.
-     * @param value The amount to be transferred.
-     * @return True on success, false otherwise.
+     * @param index Index of transaction to remove.
+     *              Transaction ordering may have changed since adding.
      */
-    function transfer(address to, uint256 value)
+    function removeTransaction(uint index)
         external
-        validRecipient(to)
-        returns (bool)
+        onlyOwner
     {
-        uint256 gonValue = value.mul(_gonsPerFragment);
-        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(gonValue);
-        _gonBalances[to] = _gonBalances[to].add(gonValue);
-        emit Transfer(msg.sender, to, value);
-        return true;
-    }
+        require(index < transactions.length, "index out of bounds");
 
-    /**
-     * @dev Function to check the amount of tokens that an owner has allowed to a spender.
-     * @param owner_ The address which owns the funds.
-     * @param spender The address which will spend the funds.
-     * @return The number of tokens still available for the spender.
-     */
-    function allowance(address owner_, address spender)
-        external
-        view
-        returns (uint256)
-    {
-        return _allowedFragments[owner_][spender];
-    }
-
-    /**
-     * @dev Transfer tokens from one address to another.
-     * @param from The address you want to send tokens from.
-     * @param to The address you want to transfer to.
-     * @param value The amount of tokens to be transferred.
-     */
-    function transferFrom(address from, address to, uint256 value)
-        external
-        validRecipient(to)
-        returns (bool)
-    {
-        _allowedFragments[from][msg.sender] = _allowedFragments[from][msg.sender].sub(value);
-
-        uint256 gonValue = value.mul(_gonsPerFragment);
-        _gonBalances[from] = _gonBalances[from].sub(gonValue);
-        _gonBalances[to] = _gonBalances[to].add(gonValue);
-        emit Transfer(from, to, value);
-
-        return true;
-    }
-
-    /**
-     * @dev Approve the passed address to spend the specified amount of tokens on behalf of
-     * msg.sender. This method is included for ERC20 compatibility.
-     * increaseAllowance and decreaseAllowance should be used instead.
-     * Changing an allowance with this method brings the risk that someone may transfer both
-     * the old and the new allowance - if they are both greater than zero - if a transfer
-     * transaction is mined before the later approve() call is mined.
-     *
-     * @param spender The address which will spend the funds.
-     * @param value The amount of tokens to be spent.
-     */
-    function approve(address spender, uint256 value)
-        external
-        returns (bool)
-    {
-        _allowedFragments[msg.sender][spender] = value;
-        emit Approval(msg.sender, spender, value);
-        return true;
-    }
-
-    /**
-     * @dev Increase the amount of tokens that an owner has allowed to a spender.
-     * This method should be used instead of approve() to avoid the double approval vulnerability
-     * described above.
-     * @param spender The address which will spend the funds.
-     * @param addedValue The amount of tokens to increase the allowance by.
-     */
-    function increaseAllowance(address spender, uint256 addedValue)
-        external
-        returns (bool)
-    {
-        _allowedFragments[msg.sender][spender] =
-            _allowedFragments[msg.sender][spender].add(addedValue);
-        emit Approval(msg.sender, spender, _allowedFragments[msg.sender][spender]);
-        return true;
-    }
-
-    /**
-     * @dev Decrease the amount of tokens that an owner has allowed to a spender.
-     *
-     * @param spender The address which will spend the funds.
-     * @param subtractedValue The amount of tokens to decrease the allowance by.
-     */
-    function decreaseAllowance(address spender, uint256 subtractedValue)
-        external
-        returns (bool)
-    {
-        uint256 oldValue = _allowedFragments[msg.sender][spender];
-        if (subtractedValue >= oldValue) {
-            _allowedFragments[msg.sender][spender] = 0;
-        } else {
-            _allowedFragments[msg.sender][spender] = oldValue.sub(subtractedValue);
+        if (index < transactions.length - 1) {
+            transactions[index] = transactions[transactions.length - 1];
         }
-        emit Approval(msg.sender, spender, _allowedFragments[msg.sender][spender]);
-        return true;
+
+        transactions.length--;
     }
+
+    /**
+     * @param index Index of transaction. Transaction ordering may have changed since adding.
+     * @param enabled True for enabled, false for disabled.
+     */
+    function setTransactionEnabled(uint index, bool enabled)
+        external
+        onlyOwner
+    {
+        require(index < transactions.length, "index must be in range of stored tx list");
+        transactions[index].enabled = enabled;
+    }
+
+    /**
+     * @return Number of transactions, both enabled and disabled, in transactions list.
+     */
+    function transactionsSize()
+        external
+        view
+        returns (uint256)
+    {
+        return transactions.length;
+    }
+
+    /**
+     * @dev wrapper to call the encoded transactions on downstream consumers.
+     * @param destination Address of destination contract.
+     * @param data The encoded data payload.
+     * @return True on success
+     */
+    function externalCall(address destination, bytes memory data)
+        internal
+        returns (bool)
+    {
+        bool result;
+        assembly {  // solhint-disable-line no-inline-assembly
+            // "Allocate" memory for output
+            // (0x40 is where "free memory" pointer is stored by convention)
+            let outputAddress := mload(0x40)
+
+            // First 32 bytes are the padded length of data, so exclude that
+            let dataAddress := add(data, 32)
+
+            result := call(
+                sub(gas(), 34710),
+                destination,
+                0, // transfer value in wei
+                dataAddress,
+                mload(data),  // Size of the input, in bytes. Stored in position 0 of the array.
+                outputAddress,
+                0  // Output is ignored, therefore the output size is zero
+            )
+        }
+        return result;
+    }    
+    
 }
