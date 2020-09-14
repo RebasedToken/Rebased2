@@ -322,9 +322,9 @@ library UniswapV2OracleLibrary {
 contract RebasedOracle is IOracle {
     using FixedPoint for *;
 
-    uint private ethRebPrice0CumulativeLast;
-    uint private ethRebPrice1CumulativeLast;
-    uint32 private ethRebBlockTimestampLast;
+    uint private reb2EthPrice0CumulativeLast;
+    uint private reb2EthPrice1CumulativeLast;
+    uint32 private reb2EthBlockTimestampLast;
     
     uint private usdcEthPrice0CumulativeLast;
     uint private usdcEthPrice1CumulativeLast;
@@ -333,8 +333,7 @@ contract RebasedOracle is IOracle {
     address private constant _weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address private constant _usdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
 
-    address private _reb;
-    IUniswapV2Pair private _eth_reb;
+    IUniswapV2Pair private _reb2_eth;
     IUniswapV2Pair private _usdc_eth;
     
     address controller;
@@ -346,23 +345,22 @@ contract RebasedOracle is IOracle {
 
     constructor(
         address _controller,
-        address __reb,       // Address of the Rebased token
-        address __eth_reb,   // Address of the ETH/REB Uniswap pair
+        address __reb2_eth,   // Address of the ETH/REB Uniswap pair
         address __usdc_reb   // Address of the USDC/ETH Uniswap pair
         ) public {
         
         controller = _controller;
-        _reb = __reb;
-        _eth_reb = IUniswapV2Pair(__eth_reb);
+
+        _reb2_eth = IUniswapV2Pair(__reb2_eth);
         _usdc_eth = IUniswapV2Pair(__usdc_reb);
         
         uint112 _dummy1;
         uint112 _dummy2;
         
-        ethRebPrice0CumulativeLast = _eth_reb.price0CumulativeLast();
-        ethRebPrice1CumulativeLast = _eth_reb.price1CumulativeLast();
+        reb2EthPrice0CumulativeLast = _reb2_eth.price0CumulativeLast();
+        reb2EthPrice1CumulativeLast = _reb2_eth.price1CumulativeLast();
         
-        (_dummy1, _dummy2, ethRebBlockTimestampLast) = _eth_reb.getReserves();
+        (_dummy1, _dummy2, reb2EthBlockTimestampLast) = _reb2_eth.getReserves();
         
         usdcEthPrice0CumulativeLast = _usdc_eth.price0CumulativeLast();
         usdcEthPrice1CumulativeLast = _usdc_eth.price1CumulativeLast();
@@ -371,17 +369,17 @@ contract RebasedOracle is IOracle {
     }
 
     // Get the average price of 1 REB in Wei
-    function getRebEthRate() internal view returns (uint256, uint256, uint32, uint256) {
+    function getRebEthRate() public view returns (uint256, uint256, uint32, uint256) {
         (uint price0Cumulative, uint price1Cumulative, uint32 _blockTimestamp) =
-            UniswapV2OracleLibrary.currentCumulativePrices(address(_eth_reb));
+            UniswapV2OracleLibrary.currentCumulativePrices(address(_reb2_eth));
             
-        FixedPoint.uq112x112 memory rebEthAverage = FixedPoint.uq112x112(uint224(1e9 * (price1Cumulative - ethRebPrice1CumulativeLast) / (_blockTimestamp - ethRebBlockTimestampLast)));
+        FixedPoint.uq112x112 memory rebEthAverage = FixedPoint.uq112x112(uint224(1e9 * (price0Cumulative - reb2EthPrice0CumulativeLast) / (_blockTimestamp - reb2EthBlockTimestampLast)));
         
         return (price0Cumulative, price1Cumulative, _blockTimestamp, rebEthAverage.mul(1).decode144());
     }
     
     // Get the average price of 1 USD in Wei
-    function getUsdcEthRate() internal view returns  (uint256, uint256, uint32, uint256) {
+    function getUsdcEthRate() public view returns (uint256, uint256, uint32, uint256) {
         (uint price0Cumulative, uint price1Cumulative, uint32 _blockTimestamp) =
             UniswapV2OracleLibrary.currentCumulativePrices(address(_usdc_eth));
             
@@ -397,7 +395,7 @@ contract RebasedOracle is IOracle {
         uint rebEthAverage;
         uint usdcEthAverage;
         
-        (ethRebPrice0CumulativeLast, ethRebPrice1CumulativeLast, ethRebBlockTimestampLast, rebEthAverage) = getRebEthRate();
+        (reb2EthPrice0CumulativeLast, reb2EthPrice1CumulativeLast, reb2EthBlockTimestampLast, rebEthAverage) = getRebEthRate();
         (usdcEthPrice0CumulativeLast, usdcEthPrice1CumulativeLast, usdcEthBlockTimestampLast, usdcEthAverage) = getUsdcEthRate();
     }
 
@@ -421,4 +419,3 @@ contract RebasedOracle is IOracle {
         return (answer);
     }
 }
-
