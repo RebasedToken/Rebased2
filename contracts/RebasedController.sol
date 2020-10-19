@@ -351,13 +351,8 @@ contract RebasedController is Ownable {
     // DECIMALS Fixed point number.
     uint256 public deviationThreshold;
 
-    // The rebase lag parameter, used to dampen the applied supply adjustment by 1 / rebaseLag
-    // Check setRebaseLag comments for more details.
-    // Natural number, no decimal places.
-    uint256 public rebaseLag;
-
     // More than this much time must pass between rebase operations.
-    uint256 public minRebaseTimeIntervalSec;
+    uint256 public rebaseCooldown;
 
     // Block timestamp of last rebase operation
     uint256 public lastRebaseTimestampSec;
@@ -378,17 +373,11 @@ contract RebasedController is Ownable {
     
     bool public rebaseLocked; 
 
-    modifier unlockedOrOwner {
-        require(!rebaseLocked || isOwner());
-        _;
-    }
-
     constructor(address _rebased) public {
         deviationThreshold = 5 * 10 ** (DECIMALS-2);
 
-        rebaseLag = 20;
-        // minRebaseTimeIntervalSec = 12 hours;
-        minRebaseTimeIntervalSec = 1 minutes;
+        // rebaseLag = 10;
+        rebaseCooldown = 4 hours;
         lastRebaseTimestampSec = 0;
         epoch = 0;
         rebaseLocked = true;
@@ -416,8 +405,11 @@ contract RebasedController is Ownable {
      */
      
     function canRebase() public view returns (bool) {
-        
-        return (lastRebaseTimestampSec.add(minRebaseTimeIntervalSec) < now);
+        return ((!rebaseLocked || isOwner()) && lastRebaseTimestampSec.add(rebaseCooldown) < now);
+    }
+    
+    function cooldownExpiryTimestamp() public view returns (uint256) {
+        return lastRebaseTimestampSec.add(rebaseCooldown);
     }
 
     /**
@@ -425,11 +417,10 @@ contract RebasedController is Ownable {
      *
      */
      
-    function rebase() external unlockedOrOwner {
-
-        require(canRebase(), "Insufficient time has passed since last rebase");
+    function rebase() external {
 
         require(tx.origin == msg.sender);
+        require(canRebase(), "Rebase not allowed");
 
         lastRebaseTimestampSec = now;
 
@@ -478,7 +469,11 @@ contract RebasedController is Ownable {
         int256 supplyDelta = computeSupplyDelta(exchangeRate, targetRate);
 
         // Apply the dampening factor.
-        supplyDelta = supplyDelta.div(rebaseLag.toInt256Safe());
+        if (supplyDelta < 0) {
+            supplyDelta = supplyDelta.div(2);
+        } else {
+            supplyDelta = supplyDelta.div(5);                   
+        }
 
         if (supplyDelta > 0 && rebased.totalSupply().add(uint256(supplyDelta)) > MAX_SUPPLY) {
             supplyDelta = (MAX_SUPPLY.sub(rebased.totalSupply())).toInt256Safe();
